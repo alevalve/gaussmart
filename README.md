@@ -59,7 +59,8 @@ python render.py \
   -m output/caterpillar \
   -s /path/to/tanksandtemples/caterpillar
 ```
-
+## Acknowledgements
+Our work builds on 2D Gaussian Splatting and integrates segmentation from Segment Anything. We thank the authors of these works for their contributions.
 
 
 
