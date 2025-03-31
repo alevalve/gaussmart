@@ -1,0 +1,35 @@
+# Create/overwrite .gitignore with all rules
+cat > .gitignore << 'EOF'
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+
+*.pt          # PyTorch models
+*.bin         # Generic binaries
+*.h5          # HDF5 files
+*.zip         # Compressed archives
+*.tar         # Tarballs
+*.msgpack     # If used
+
+# System files
+.DS_Store
+
+# Data files
+*.npy
+*.ply
+*.pth
+
+# Project directories
+/output/
+/images/
+/dataset_transformations/
+/eval/dtu/
+/scripts/tmp/
+
+# Identification module
+/identification/weights/
+/identification/results/
+/identification/cameras/
+EOF
