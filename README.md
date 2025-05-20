@@ -1,6 +1,6 @@
 # GauSSmart: Semantic-Guided Gaussian Splatting for 3D Reconstruction
 
-This repo contains the official implementation for the paper "GauSSmart: Semantic-Guided Gaussian Splatting for 3D Reconstruction". Our work enhances 2D Gaussian Splatting by integrating 2D segmentation masks for each object in the scene. By leveraging segmentation information, we guide the Gaussian splat generation process to improve coverage in underrepresented regions, leading to more accurate scene and mesh reconstructions.
+This repo contains the official implementation for the paper "GauSSmart: Semantic-Guided Gaussian Splatting for 3D Reconstruction". Our work enhances 2D Gaussian Splatting by integrating 2D segmentation masks for each object in the scene. By leveraging segmentation information, we guide the Gaussian splat generation process to improve coverage in underrepresented regions, leading to accurate scene and mesh reconstructions.
 
 ![Teaser_pdf_pages-to-jpg-0001](https://github.com/user-attachments/assets/8a14f70c-7133-4f55-9d5d-1979bff232dc)
 
