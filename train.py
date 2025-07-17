@@ -22,6 +22,10 @@ from tqdm import tqdm
 from utils.image_utils import psnr, render_net_image
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+
+# Import LPIPS
+from lpipsPyTorch.modules.lpips import LPIPS
+
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -34,6 +38,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
+    
+    # Initialize LPIPS loss
+    lpips_loss = LPIPS(net_type='alex', version='0.1').cuda()
+    
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         gaussians.restore(model_params, opt)
@@ -48,7 +56,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ema_loss_for_log = 0.0
     ema_dist_for_log = 0.0
     ema_normal_for_log = 0.0
-    ema_segment_for_log = 0.0  # Added for segment loss tracking
+    ema_segment_for_log = 0.0  # Removed LPIPS from training tracking
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
@@ -76,7 +84,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Regular regularization terms
         lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0
         lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0
-        lambda_segment = opt.lambda_segment if iteration > 0 and iteration < 7000 else 0.0  
+        lambda_segment = opt.lambda_segment if iteration > 0 and iteration < 7000 else 0.0
 
         rend_dist = render_pkg["rend_dist"]
         rend_normal = render_pkg['rend_normal']
@@ -85,6 +93,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         normal_loss = lambda_normal * (normal_error).mean()
         dist_loss = lambda_dist * (rend_dist).mean()
 
+        # Segment consistency loss
         if lambda_segment > 0:
             visible_features = gaussians.get_features[visibility_filter]
             visible_positions = gaussians.get_xyz[visibility_filter]
@@ -98,7 +107,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         else:
             segment_loss = torch.tensor(0.0, device='cuda')
 
-        # Combined loss
+        # Combined loss (no LPIPS in training loss)
         total_loss = loss + dist_loss + normal_loss + segment_loss
         
         total_loss.backward()
@@ -132,7 +141,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 tb_writer.add_scalar('train_loss_patches/normal_loss', ema_normal_for_log, iteration)
                 tb_writer.add_scalar('train_loss_patches/segment_loss', ema_segment_for_log, iteration)
 
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
+            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background), lpips_loss)
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
@@ -201,7 +210,7 @@ def prepare_output_and_logger(args):
     return tb_writer
 
 @torch.no_grad()
-def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
+def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs, lpips_loss):
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/reg_loss', Ll1.item(), iteration)
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
@@ -218,7 +227,8 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
             if config['cameras'] and len(config['cameras']) > 0:
                 l1_test = 0.0
                 psnr_test = 0.0
-                ssim_test = 0.0  
+                ssim_test = 0.0
+                lpips_test = 0.0  # Add LPIPS evaluation
                 
                 for idx, viewpoint in enumerate(config['cameras']):
                     render_pkg = renderFunc(viewpoint, scene.gaussians, *renderArgs)
@@ -253,20 +263,26 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
 
                     l1_test += l1_loss(image, gt_image).mean().double()
                     psnr_test += psnr(image, gt_image).mean().double()
-                    # Calculate SSIM using your existing implementation
                     ssim_test += ssim(image.unsqueeze(0), gt_image.unsqueeze(0)).double()
+                    
+                    # Calculate LPIPS for evaluation
+                    image_norm = image * 2.0 - 1.0
+                    gt_image_norm = gt_image * 2.0 - 1.0
+                    lpips_test += lpips_loss(image_norm, gt_image_norm).double()
 
                 psnr_test /= len(config['cameras'])
                 l1_test /= len(config['cameras'])
-                ssim_test /= len(config['cameras'])  # Average SSIM across cameras
+                ssim_test /= len(config['cameras'])
+                lpips_test /= len(config['cameras'])
                 
-                print("\n[ITER {}] Evaluating {}: L1 {} PSNR {} SSIM {}".format(
-                    iteration, config['name'], l1_test, psnr_test, ssim_test))
+                print("\n[ITER {}] Evaluating {}: L1 {} PSNR {} SSIM {} LPIPS {}".format(
+                    iteration, config['name'], l1_test, psnr_test, ssim_test, lpips_test))
                 
                 if tb_writer:
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
-                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - ssim', ssim_test, iteration)  # Add SSIM to tensorboard
+                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - ssim', ssim_test, iteration)
+                    tb_writer.add_scalar(config['name'] + '/loss_viewpoint - lpips', lpips_test, iteration)
 
         torch.cuda.empty_cache()
 

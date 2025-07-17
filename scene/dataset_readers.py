@@ -112,7 +112,7 @@ def fetchPly(path):
     normals = np.vstack([vertices['nx'], vertices['ny'], vertices['nz']]).T
     
     # Load segments from file directly
-    segment_path = os.path.join("identification", "results", "point_cloud", "segment_indices.npy")
+    segment_path = os.path.join("identification", "results", "segments", "point_cloud", "segment_indices.npy")
     try:
         segments = np.load(segment_path)
         print(f"Loaded {len(segments)} segment indices")  

@@ -14,7 +14,7 @@ def setup_directories(output_base_path: str) -> tuple:
     Create the directory structure needed for the processing pipeline.
     Returns tuples of paths to the created directories.
     """
-    base_dir = os.path.join(output_base_path, 'segments', 'results')
+    base_dir = os.path.join(output_base_path, 'segments')
     boxes_dir = os.path.join(base_dir, 'boxes')
     masks_dir = os.path.join(base_dir, 'masks')
     cameras_dir = os.path.join(base_dir, 'cameras')
