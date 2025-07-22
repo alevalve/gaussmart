@@ -5,7 +5,7 @@ import argparse
 import open3d as o3d
 import sys
 from process_selected_views import ProcessSelectedViews
-from segmentation import SAMSegmentation
+from identification.segmentation.sam import SAMSegmentation
 import shutil
 from pc_projection import aggregate_segment_indices, load_point_cloud
 
