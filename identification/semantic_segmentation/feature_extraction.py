@@ -4,6 +4,13 @@ import torch.nn.functional as F
 import math
 from typing import Optional, Tuple
 
+class Projected(nn.Module):
+    def __init__(self, in_dim, out_dim=512):
+        super().__init__()
+        self.proj = nn.Linear(in_dim, out_dim)
+
+    def forward(self, x):
+        return self.proj(x)
 
 class MultiHeadAttention(nn.Module):
     """Multi-head attention for cross-modal fusion"""
