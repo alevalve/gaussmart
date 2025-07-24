@@ -1,5 +1,6 @@
 import torch
 from transformers import CLIPProcessor, CLIPModel
+import argparse
 from transformers import AutoImageProcessor, AutoModel
 from PIL import Image
 from itertools import combinations
@@ -164,24 +165,12 @@ def test_feature_extraction(image_path, mask_path):
 
         result = attention(query=dino_embed, key=clip_embed, value=clip_embed)
         attention_embeds.append(result)
-    
-    # Global embedding
-
-    attn_mat = torch.stack(attention_embeds)
-    attn_mat = attn_mat.squeeze(1)
-    global_embed = F.normalize(attn_mat.mean(dim=0, keepdim=True), p=2, dim=-1)
-
-    # Similarity among embeddings
-    similarity_scores = torch.zeros(len(attention_embeds))
-
-    for j in range(len(attention_embeds)):
-        similarity = F.cosine_similarity(attn_mat[j].unsqueeze(0), global_embed, dim=-1)
-        similarity_scores[j] = similarity.item()
-    
-    return similarity_scores, attention_embeds
 
 
-def similarity_among_views(images_dir, masks_dir):
+    return attention_embeds
+
+
+def attention_embeddings(images_dir, masks_dir):
 
         images_dir = Path(images_dir)
         masks_dir = Path(masks_dir)
@@ -196,67 +185,15 @@ def similarity_among_views(images_dir, masks_dir):
                 continue
             
         
-            scores = test_feature_extraction(str(image_file), str(mask_file))
+            attention_embeds = test_feature_extraction(str(image_file), str(mask_file))
+    
+            all_embeds = torch.cat(attention_embeds, dim=0)
+            torch.save(all_embeds, f"seg_attention_{idx}.pt")
+            all_embeds = torch.load(f"seg_attention_{idx}.pt", map_location="cpu")
 
-            output_path = Path("output_scores") / f"scores_{idx}.json"
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-
-            with open(output_path, "w") as f:
-                json.dump(scores.tolist(), f)
-
-def cross_view_segment_similarity(images_dir, masks_dir, save_path="segment_cross_similarity.json"):
-
-    images_dir = Path(images_dir)
-    masks_dir = Path(masks_dir)
-
-    all_embeddings = {}
-
-    # Collect segment embeddings for each image
-    for image_file in sorted(images_dir.glob("*.png")):
-        idx = image_file.stem.split("_")[-1]
-        mask_file = masks_dir / f"segments_{idx}.npz"
-
-        if not mask_file.exists():
-            print(f"Warning: No mask for {image_file.name}")
-            continue  
-
-        # This function must return both scores and embeddings
-        scores, attention_embeds = test_feature_extraction(str(image_file), str(mask_file))
-
-        image_id = image_file.stem
-        all_embeddings[image_id] = [(f"{image_id}_{i}", emb.squeeze(0)) for i, emb in enumerate(attention_embeds)]
-
-    # Compute pairwise similarity
-    similarity_pairs = []
-
-    image_pairs = combinations(all_embeddings.items(), 2)
-
-    for (view_a_id, segs_a), (view_b_id, segs_b) in image_pairs:
-        for id_a, emb_a in segs_a:
-            for id_b, emb_b in segs_b:
-                emb_a = F.normalize(emb_a, p=2, dim=0)
-                emb_b = F.normalize(emb_b, p=2, dim=0)
-                sim = F.cosine_similarity(emb_a.unsqueeze(0), emb_b.unsqueeze(0), dim=-1).item()
-                if sim > 0.05:
-                    similarity_pairs.append((id_a, id_b, sim))
-
-    if save_path:
-        with open(save_path, "w") as f:
-            json.dump(similarity_pairs, f, indent=2)
-
-    return similarity_pairs
-
-
+      
 if __name__ == "__main__":
-    similarity_among_views(
+    attention_embeddings(
         images_dir="/data3/alex/gaussmart/identification/results/segments/segmented_images",
         masks_dir="/data3/alex/gaussmart/identification/results/segments/masks"
     )
-
-
-
-
-        
-
-
-
