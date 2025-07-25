@@ -1,11 +1,12 @@
 import os
 import torch
 import numpy as np
+import json
 import argparse
 import open3d as o3d
 import sys
 from process_selected_views import ProcessSelectedViews
-from identification.segmentation.sam import SAMSegmentation
+from sam import SAMSegmentation
 import shutil
 from pc_projection import aggregate_segment_indices, load_point_cloud
 
@@ -21,14 +22,15 @@ def setup_directories(output_base_path: str) -> tuple:
     segmented_images_dir = os.path.join(base_dir, 'segmented_images')
     point_cloud_dir = os.path.join(base_dir, 'point_cloud')
     raw_images_dir = os.path.join(base_dir, 'images') 
+    indices_dir = os.path.join(base_dir, 'indices')
     
     if os.path.exists(base_dir):
         shutil.rmtree(base_dir)
     
-    for directory in [boxes_dir, masks_dir, cameras_dir, segmented_images_dir, point_cloud_dir, raw_images_dir]:
+    for directory in [boxes_dir, masks_dir, cameras_dir, segmented_images_dir, point_cloud_dir, raw_images_dir, indices_dir]:
         os.makedirs(directory, exist_ok=True)
     
-    return boxes_dir, masks_dir, cameras_dir, segmented_images_dir, point_cloud_dir, raw_images_dir
+    return boxes_dir, masks_dir, cameras_dir, segmented_images_dir, point_cloud_dir, raw_images_dir, indices_dir
 
 def get_point_cloud_path(scan_path: str, dataset_type: str) -> str:
     """Get point cloud path based on dataset type"""
@@ -41,7 +43,7 @@ def run_segmentation(scan_path: str, output_base_path: str, dataset_type: str):
     """Run segmentation process with given parameters"""
     try:
         # Setup directories
-        boxes_dir, masks_dir, cameras_dir, segmented_images_dir, point_cloud_dir, raw_images_dir = setup_directories(output_base_path)
+        boxes_dir, masks_dir, cameras_dir, segmented_images_dir, point_cloud_dir, raw_images_dir, indices_dir = setup_directories(output_base_path)
         
         # Initialize components
         if dataset_type.lower() == 'dtu':
@@ -82,8 +84,17 @@ def run_segmentation(scan_path: str, output_base_path: str, dataset_type: str):
                 "camera_data": selected_data['camera_parameters'][f"camera_{i:03d}"]
             })
         
-        # Save camera data
+        # Save camera data and indices
         selected_indices = selection_results['selected_indices']
+        if isinstance(selected_indices, np.ndarray):
+            str_indices = [str(int(x)) for x in selected_indices.tolist()]
+        else:
+            str_indices = [str(int(x)) for x in selected_indices]
+        
+        json_path = os.path.join(indices_dir, "selected_indices.json")
+        with open(json_path, "w") as f:
+            json.dump(str_indices, f, indent=2)
+
         camera_data = {
             'selected_indices': selected_indices,
             'cameras_dict': {},
