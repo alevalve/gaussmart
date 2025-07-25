@@ -55,17 +55,6 @@ class ProcessSelectedViews:
         else:
             mapped_indices = selected_indices
 
-        # Create output directories
-        os.makedirs(self.output_dir, exist_ok=True)
-        camera_dir = os.path.join(self.output_dir, 'cameras')
-        images_dir = os.path.join(self.output_dir, 'images')
-        os.makedirs(camera_dir, exist_ok=True)
-        os.makedirs(images_dir, exist_ok=True)
-
-        # Save camera parameters and copy images
-        self.save_camera_parameters(selected_indices, camera_dir)  # Use original indices for cameras
-        self.copy_selected_images(mapped_indices, images_dir)      # Use mapped indices for images
-
         return selection_results
 
     def save_camera_parameters(self, selected_indices: List[int], camera_dir: str):
