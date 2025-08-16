@@ -33,3 +33,6 @@ __pycache__/
 /identification/results/
 /identification/cameras/
 EOFodin/
+
+/identification/results
+/pc_projected/
