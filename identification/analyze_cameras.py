@@ -1,6 +1,6 @@
 import numpy as np
 from typing import List, Tuple, Dict
-from camera_loader import CameraLoader
+from identification.camera_loader import CameraLoader
 
 class AnalyzeCameras:
     def __init__(self, camera_path: str, images_dir: str, device='cpu'):
@@ -10,6 +10,7 @@ class AnalyzeCameras:
         self.cameras = None
         self.camera_data = {}
         self.format_type = None
+        self.views = {}
         self.open_cameras()
     
     def open_cameras(self):

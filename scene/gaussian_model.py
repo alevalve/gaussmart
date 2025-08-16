@@ -11,8 +11,10 @@
 
 import torch
 import numpy as np
+from sklearn.neighbors import NearestNeighbors
 from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
 from torch import nn
+from torch.distributions import MultivariateNormal
 import os
 from utils.system_utils import mkdir_p
 from plyfile import PlyData, PlyElement
@@ -126,130 +128,130 @@ class GaussianModel:
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
 
-    def create_from_pcd(self, pcd : BasicPointCloud, spatial_lr_scale : float):
-        self.spatial_lr_scale = spatial_lr_scale
+    def calculate_segment_covariance(self, seg_points, alpha=0.5, min_eigenval=1e-6):
+        """Calculate regularized covariance matrix for a segment."""
+        mean = seg_points.mean(dim=0)
+        cov_matrix = torch.cov(seg_points.T)
         
-        # Initial point cloud conversion
+        # Regularize eigenvalues for stability
+        eigenvals, eigenvecs = torch.linalg.eigh(cov_matrix)
+        eigenvals = torch.clamp(eigenvals, min=min_eigenval)
+        cov_matrix = eigenvecs @ torch.diag(eigenvals) @ eigenvecs.T
+        
+        # Scale covariance
+        scaled_cov = (alpha ** 2) * cov_matrix
+        
+        return mean, scaled_cov
+
+    def augment_segment_points(self, seg_points, seg_colors, points_to_add):
+        """Generate new points for a segment using full covariance."""
+        try:
+            mean, scaled_cov = self.calculate_segment_covariance(seg_points)
+            
+            # Try multivariate normal
+            dist = MultivariateNormal(mean, scaled_cov)
+            new_points = dist.sample((points_to_add,))
+            
+        except Exception:
+            # Fallback to diagonal
+            mean = seg_points.mean(dim=0)
+            std = seg_points.std(dim=0) * 0.5
+            noise = torch.randn(points_to_add, 3, device=seg_points.device)
+            new_points = mean.unsqueeze(0) + noise * std.unsqueeze(0)
+        
+        # Average color
+        avg_color = seg_colors.mean(dim=0)
+        new_colors = avg_color.unsqueeze(0).repeat(points_to_add, 1)
+        
+        return new_points, new_colors
+
+    def create_from_pcd(self, pcd: BasicPointCloud, spatial_lr_scale: float):
+        
+        self.spatial_lr_scale = spatial_lr_scale
+
+        # Initial setup
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
         features = torch.zeros((fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
         features[:, :3, 0] = fused_color
-        features[:, 3:, 1:] = 0.0
-
-        print("Initial number of points: ", fused_point_cloud.shape[0])
         
-        # Get or create segments
-        if hasattr(pcd, 'segments'):
-            segments = torch.tensor(np.asarray(pcd.segments)).long().cuda()
-        else:
-            segments = torch.zeros(fused_point_cloud.shape[0], dtype=torch.long, device="cuda")
+        # Get segments and mask areas
+        segments = torch.tensor(np.asarray(pcd.segments)).long().cuda() if hasattr(pcd, 'segments') \
+                else torch.zeros(fused_point_cloud.shape[0], dtype=torch.long, device="cuda")
         
-        # Find segments and count points
-        unique_segments = torch.unique(segments)
-        print(f"Total number of segments: {len(unique_segments)}")
+        mask_areas = getattr(pcd, 'mask_areas', {})
         
-        # Calculate points per segment and threshold
-        points_per_segment = {}
-        for seg_id in unique_segments:
-            seg_points = fused_point_cloud[segments == seg_id]
-            points_per_segment[seg_id.item()] = len(seg_points)
-        
-        counts = torch.tensor(list(points_per_segment.values()))
-        mean_points = torch.mean(counts.float())
-        median_points = torch.median(counts.float())
-        std_points = torch.std(counts.float())
-        threshold = max(median_points * 0.5, 10)
-        
-        print(f"Adaptive threshold: {threshold:.0f} points (mean: {mean_points:.0f}, std: {std_points:.0f})")
-        
-        # Initialize new points
-        new_points = []
-        new_colors = []
-        new_segments = []
-        
-        for seg_id in unique_segments:
-            current_points = points_per_segment[seg_id.item()]
-            if current_points < threshold:
-                # Get segment's own points
-                seg_own_points = fused_point_cloud[segments == seg_id]
+        # Augment if mask areas available
+        if mask_areas:
+            print("Performing mask-area-based augmentation...")
+            
+            unique_segments, counts = torch.unique(segments, return_counts=True)
+            new_points = []
+            new_colors = []
+            new_segments = []
+            
+            median_area = np.median(list(mask_areas.values())) if mask_areas else 1000
+            
+            for i, seg_id in enumerate(unique_segments):
+                seg_id_item = seg_id.item()
                 
-                # Get neighbor points
-                neighbor_points = []
-                for other_seg_id in unique_segments:
-                    if other_seg_id != seg_id:
-                        seg_points = fused_point_cloud[segments == other_seg_id]
-                        neighbor_points.append(seg_points)
+                if seg_id_item == -1 or counts[i].item() < 5:
+                    continue
                 
-                if neighbor_points:
-                    neighbor_points = torch.cat(neighbor_points)
-                    # Combine own points and neighbors with weights
-                    if len(seg_own_points) > 0:
-                        combined_points = torch.cat([seg_own_points * 2, neighbor_points])  # Give more weight to own points
-                    else:
-                        combined_points = neighbor_points
-                    
-                    # Calculate how many points to add
-                    points_to_add = min(
-                        int(threshold) - current_points,
-                        combined_points.shape[0]
+                # Calculate target points
+                mask_area = mask_areas.get(seg_id_item, median_area)
+                target_points = max(int(np.sqrt(mask_area) * 0.1), 10)
+                points_to_add = target_points - counts[i].item()
+                
+                if points_to_add <= 0:
+                    continue
+                
+                # Get segment data
+                seg_mask = segments == seg_id
+                seg_points = fused_point_cloud[seg_mask]
+                seg_colors = fused_color[seg_mask]
+                
+                # Augment this segment
+                try:
+                    new_seg_points, new_seg_colors = self.augment_segment_points(
+                        seg_points, seg_colors, points_to_add
                     )
                     
-                    # Calculate weighted bounding box
-                    min_coords = torch.min(combined_points, dim=0).values
-                    max_coords = torch.max(combined_points, dim=0).values
+                    new_points.append(new_seg_points)
+                    new_colors.append(new_seg_colors)
+                    new_segments.extend([seg_id_item] * points_to_add)
                     
-                    # Sample points using combined distribution
-                    for _ in range(points_to_add):
-                        # Sample base point from combined set with preference to segment points
-                        if len(seg_own_points) > 0:
-                            reference_points = torch.cat([seg_own_points.repeat(2,1), neighbor_points])
-                            reference_idx = torch.randint(0, len(reference_points), (1,))
-                            reference_point = reference_points[reference_idx]
-                            
-                            # Add small random offset
-                            offset = torch.randn(3, device="cuda") * 0.1  # Small random offset
-                            new_point = reference_point + offset
-                        else:
-                            # If no own points, sample from neighbor distribution
-                            new_point = min_coords + torch.rand(3, device="cuda") * (max_coords - min_coords)
-                        
-                        new_points.append(new_point.squeeze())
-                        
-                        # Color from nearest neighbors in combined set
-                        distances = torch.norm(combined_points - new_point, dim=1)
-                        nearest_indices = torch.topk(distances, k=min(5, len(distances)), largest=False).indices
-                        avg_color = torch.mean(fused_color[nearest_indices], dim=0)
-                        new_colors.append(avg_color)
-                        new_segments.append(seg_id.item())
+                    print(f"Segment {seg_id_item}: added {points_to_add} points")
                     
-                    print(f"Segment {seg_id.item()}: Adding {points_to_add} points (had {current_points})")
-
-        if new_points:
-            # Convert lists to tensors
-            new_points = torch.stack(new_points)
-            new_colors = torch.stack(new_colors)
-            new_segments = torch.tensor(new_segments, device="cuda", dtype=torch.long)
+                except Exception as e:
+                    print(f"Failed to augment segment {seg_id_item}: {e}")
+                    continue
             
-            # Combine with existing points
-            fused_point_cloud = torch.cat([fused_point_cloud, new_points])
-            
-            # Create features for new points
-            new_features = torch.zeros((len(new_points), 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
-            new_features[:, :3, 0] = RGB2SH(new_colors)
-            features = torch.cat([features, new_features])
-            
-            # Update segments
-            segments = torch.cat([segments, new_segments])
+            # Combine new points with original
+            if new_points:
+                new_points = torch.cat(new_points)
+                new_colors = torch.cat(new_colors)
+                new_segments = torch.tensor(new_segments, device="cuda", dtype=torch.long)
+                
+                fused_point_cloud = torch.cat([fused_point_cloud, new_points])
+                segments = torch.cat([segments, new_segments])
+                
+                # Update features
+                new_features = torch.zeros((len(new_points), 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+                new_features[:, :3, 0] = new_colors
+                features = torch.cat([features, new_features])
+                
+                print(f"Total augmented points: {len(new_points)}")
         
-        # Calculate scales for all points
+        print(f"Final point count: {fused_point_cloud.shape[0]}")
+        
+        # Initialize Gaussian parameters
         dist2 = torch.clamp_min(distCUDA2(fused_point_cloud), 0.0000001)
         scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 2)
-        
-        # Initialize rotations and opacities
         rots = torch.rand((fused_point_cloud.shape[0], 4), device="cuda")
         opacities = self.inverse_opacity_activation(0.1 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
         
-        # Store all parameters
+        # Store parameters
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         self._features_dc = nn.Parameter(features[:,:,0:1].transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(features[:,:,1:].transpose(1, 2).contiguous().requires_grad_(True))
@@ -259,9 +261,7 @@ class GaussianModel:
         self._segments = segments
         
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
-        print(f"Final number of points: {self._xyz.shape[0]}")
-
-
+            
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")

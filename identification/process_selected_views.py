@@ -3,8 +3,12 @@ import shutil
 import numpy as np
 from typing import Dict, List
 from pathlib import Path
-from analyze_cameras import AnalyzeCameras
-from clustering_cameras import CameraClustering
+try:
+    from .analyze_cameras import AnalyzeCameras
+    from .clustering_cameras import CameraClustering
+except ImportError:
+    from analyze_cameras import AnalyzeCameras
+    from clustering_cameras import CameraClustering
 
 class ProcessSelectedViews:
     def __init__(self, camera_path: str, images_dir: str, output_dir: str, dataset_type: str = None):
@@ -24,9 +28,6 @@ class ProcessSelectedViews:
     def _filter_image_files(self, files: List[str]) -> List[str]:
         """Filter out hidden and system files"""
         filtered = [f for f in files if not f.startswith('.') and not f.startswith('._')]
-        print(f"\nFiltering image files:")
-        print(f"Total files before filtering: {len(files)}")
-        print(f"Files after filtering: {len(filtered)}")
         if len(files) != len(filtered):
             print(f"Filtered out {len(files) - len(filtered)} files")
             print("First few filtered out files:", [f for f in files if f not in filtered][:5])
@@ -55,7 +56,9 @@ class ProcessSelectedViews:
         else:
             mapped_indices = selected_indices
 
-        return selection_results
+        selected_indices = [int(idx) for idx in mapped_indices]
+
+        return { 'selected_indices': selected_indices }
 
     def save_camera_parameters(self, selected_indices: List[int], camera_dir: str):
         """Save selected camera parameters with all formats in one file"""
@@ -73,17 +76,14 @@ class ProcessSelectedViews:
         
         save_path = os.path.join(camera_dir, 'selected_cameras.npz')
         np.savez(save_path, **camera_data)
-        print(f"\nSaved all camera parameters to {save_path}")
 
     def copy_selected_images(self, selected_indices: List[int], output_dir: str) -> List[str]:
         """Copy selected images to output directory"""
         all_files = sorted(os.listdir(self.images_dir))
-        print(f"Total files in directory: {len(all_files)}")
         
         image_files = self._filter_image_files(all_files)
         
         copied_images = []
-        print("\nProcessing selected indices:")
         
         for i, idx in enumerate(selected_indices):
             
@@ -91,8 +91,8 @@ class ProcessSelectedViews:
                 # Format the image filename according to TanksAndTemples convention if needed
                 if self.dataset_type and self.dataset_type.lower() == 'tyt':
                     # Try both 5-digit and 6-digit formats
-                    src_filename_5digit = f"{idx:05d}.jpg"
-                    src_filename_6digit = f"{idx:06d}.jpg"
+                    src_filename_5digit = f"{idx * 2:05d}.jpg"
+                    src_filename_6digit = f"{idx * 2:06d}.jpg"
                     
                     src_path_5digit = os.path.join(self.images_dir, src_filename_5digit)
                     src_path_6digit = os.path.join(self.images_dir, src_filename_6digit)
@@ -122,7 +122,7 @@ class ProcessSelectedViews:
         print(f"\nTotal images copied: {len(copied_images)}")
         return copied_images
 
-    def get_selected_data(self, selected_indices: List[int]) -> Dict:
+    def get_selected_data(self, selected_indices: List[int], already_mapped=False) -> Dict:
         """Get data for selected views"""
         all_files = sorted(os.listdir(self.images_dir))
         image_files = self._filter_image_files(all_files)
@@ -130,8 +130,8 @@ class ProcessSelectedViews:
         image_paths = []
 
         # Map indices if needed
-        if self.dataset_type and self.dataset_type.lower() == 'tyt':
-            mapped_indices = [self._map_camera_to_image_index(idx) for idx in selected_indices]
+        if self.dataset_type and self.dataset_type.lower() == 'tyt' and not already_mapped:
+            mapped_indices = [idx // 2 for idx in selected_indices]
         else:
             mapped_indices = selected_indices
 
@@ -164,6 +164,8 @@ class ProcessSelectedViews:
                 
                 if os.path.exists(image_path):
                     image_paths.append(image_path)
+
+        selected_indices = [int(idx) for idx in mapped_indices]
 
         return {
             'indices': selected_indices,

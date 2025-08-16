@@ -1,59 +1,67 @@
+#!/usr/bin/env python3
+# Copyright (C) 2023, Inria
+# GRAPHDECO research group, https://team.inria.fr/graphdeco
+# All rights reserved.
+#
+# This software is free for non-commercial, research and evaluation use
+# under the terms of the LICENSE.md file.
+#
+# For inquiries contact  george.drettakis@inria.fr
+
 import os
 from argparse import ArgumentParser
 
-tnt_360_scenes = ['Barn', 'Caterpillar', 'Ignatius', 'Truck']
-tnt_large_scenes = ['Meetingroom', 'Courthouse']
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]  # parent of scripts/
+PY = sys.executable
+
+# Tanks and Temples scenes (lowercase to match typical folder names)
+tnt_360_scenes  = ["barn", "caterpillar", "ignatius", "truck"]
+tnt_large_scenes = ["meetingroom", "courthouse"]
 
 parser = ArgumentParser(description="Full evaluation script parameters")
 parser.add_argument("--skip_training", action="store_true")
 parser.add_argument("--skip_rendering", action="store_true")
 parser.add_argument("--skip_metrics", action="store_true")
-parser.add_argument("--output_path", default="./eval/tnt")
-parser.add_argument('--TNT_data', "-TNT_data", required=True, type=str)
+parser.add_argument("--output_path", default="eval/tnt")
 args, _ = parser.parse_known_args()
 
-if not args.skip_metrics:
-    parser.add_argument('--TNT_GT', required=True, type=str)
+all_scenes = []
+all_scenes.extend(tnt_360_scenes)
+all_scenes.extend(tnt_large_scenes)
+
+if not args.skip_training or not args.skip_rendering:
+    parser.add_argument('--tnt', "-tnt", required=True, type=str)  # dataset root
     args = parser.parse_args()
 
-
 if not args.skip_training:
-    common_args = " --quiet --test_iterations -1 --depth_ratio 1.0 -r 2 "
-    
+    # Run your segmentation pass during training (seg losses zeroed)
+    seg_args = " --dataset_type nerf --run_segmentation --lambda_normal 0.00 --lambda_dist 0.00 --lambda_segment 0.00"
+    common_args = " --quiet --eval --test_iterations -1" + seg_args
+
     for scene in tnt_360_scenes:
-        source = args.TNT_data + "/" + scene
-        print("python train.py -s " + source + " -m " + args.output_path + "/" + scene + common_args + ' --lambda_dist 100')
-        os.system("python train.py -s " + source + " -m " + args.output_path + "/" + scene + common_args)
+        source = args.tnt + "/" + scene
+        os.system(f"{PY} {REPO_ROOT/'train.py'} -s {source} -i images -m {args.output_path}/{scene}{common_args}")
 
     for scene in tnt_large_scenes:
-        source = args.TNT_data + "/" + scene
-        print("python train.py -s " + source + " -m " + args.output_path + "/" + scene + common_args+ ' --lambda_dist 10')
-        os.system("python train.py -s " + source + " -m " + args.output_path + "/" + scene + common_args)
-
+        source = args.tnt + "/" + scene
+        os.system(f"{PY} {REPO_ROOT/'train.py'} -s {source} -i images -m {args.output_path}/{scene}{common_args}")
 
 if not args.skip_rendering:
     all_sources = []
-    common_args = " --quiet --depth_ratio 1.0 "
-
     for scene in tnt_360_scenes:
-        source = args.TNT_data + "/" + scene
-        print("python render.py --iteration 30000 -s " + source + " -m " + args.output_path + "/" + scene + common_args + ' --num_cluster 1 --voxel_size 0.004 --sdf_trunc 0.016 --depth_trunc 3.0')
-        os.system("python render.py --iteration 30000 -s " + source + " -m " + args.output_path + "/" + scene + common_args + '  --num_cluster 1 --voxel_size 0.004 --sdf_trunc 0.016 --depth_trunc 3.0')
-
+        all_sources.append(args.tnt + "/" + scene)
     for scene in tnt_large_scenes:
-        source = args.TNT_data + "/" + scene
-        print("python render.py --iteration 30000 -s " + source + " -m " + args.output_path + "/" + scene + common_args + ' --num_cluster 1 --voxel_size 0.006 --sdf_trunc 0.024 --depth_trunc 4.5')
-        os.system("python render.py --iteration 30000 -s " + source + " -m " + args.output_path + "/" + scene + common_args + ' --num_cluster 1 --voxel_size 0.006 --sdf_trunc 0.024 --depth_trunc 4.5')
+        all_sources.append(args.tnt + "/" + scene)
+
+    common_args = " --quiet --eval --skip_train"
+    for scene, source in zip(all_scenes, all_sources):
+        os.system(f"{PY} {REPO_ROOT/'render.py'} --iteration 30000 -s {source} -m {args.output_path}/{scene}{common_args}")
 
 if not args.skip_metrics:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    all_scenes = tnt_360_scenes + tnt_large_scenes
-
+    scenes_string = ""
     for scene in all_scenes:
-        ply_file = f"{args.output_path}/{scene}/train/ours_{iteration}/fuse_post.ply"
-        string = f"OMP_NUM_THREADS=4 python {script_dir}/eval_tnt/run.py " + \
-            f"--dataset-dir {args.TNT_GT}/{scene} " + \
-            f"--traj-path {args.TNT_data}/{scene}/{scene}_COLMAP_SfM.log " + \
-            f"--ply-path {ply_file}"
-        print(string)
-        os.system(string)
+        scenes_string += "\"" + args.output_path + "/" + scene + "\" "
+    os.system(f"{PY} {REPO_ROOT/'metrics.py'} -m {scenes_string}")

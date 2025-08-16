@@ -1,244 +1,140 @@
 import numpy as np
-from sklearn.cluster import KMeans, DBSCAN
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import silhouette_score
-from typing import Dict, List
-from analyze_cameras import AnalyzeCameras
+from sklearn.cluster import KMeans
+from typing import Dict, List, Any
+from identification.analyze_cameras import AnalyzeCameras
 
 class CameraClustering:
     """
-    Class for clustering camera positions and selecting representative views
-    for multi-view processing tasks.
+    Cluster camera poses and select representative views, ensuring consistent
+    handling for DTU, NeRF, and Tanks & Temples formats via explicit c2w matrices.
     """
     def __init__(self, analyzer: AnalyzeCameras):
         self.camera_analyzer = analyzer
-        self.positions = None
-        self.view_directions = None
-        self.extract_camera_data()
+        self.positions: np.ndarray = np.empty((0, 3), dtype=float)
+        self.view_directions: np.ndarray = np.empty((0, 3), dtype=float)
+        self._extract_camera_data()
 
-    def normalize_positions(self, positions):
-        """
-        Normalization using scene center and scale.
-        """
+    @staticmethod
+    def _normalize_positions(positions: np.ndarray) -> (np.ndarray, np.ndarray, np.ndarray):
+        # Center on mean and scale by per-axis std (robust)
         center = positions.mean(axis=0)
         centered = positions - center
-        # Use robust scaling based on scene extent
         scale = np.std(centered, axis=0)
-        scale = np.where(scale < 1e-6, 1.0, scale) 
+        scale = np.where(scale < 1e-6, 1.0, scale)
         normalized = centered / scale
         return normalized, center, scale
-        
-    def extract_camera_data(self):
-        """
-        Extract camera positions and view directions from the camera analyzer.
-        """
-        positions = []
-        view_directions = []
-        
-        for view_num, matrices in self.camera_analyzer.views.items():
-            if 'world_mat' in matrices:
-                world_mat = matrices['world_mat']
-                pos = world_mat[:3, 3]
-                direction = -world_mat[:3, 2]
-                positions.append(pos)
-                view_directions.append(direction)
-        
-        self.positions = np.array(positions)
-        self.view_directions = np.array(view_directions)
-    
-    def cosine_similarity_matrix(self, dirs):
 
-        """Obtain cosine similarity matrix (N,N) from direction vectors (N,3)"""
+    def _extract_camera_data(self) -> None:
+        # Extract camera centers and forward axes (z) from c2w
+        pos_list: List[np.ndarray] = []
+        dir_list: List[np.ndarray] = []
+        for vid, mats in self.camera_analyzer.views.items():
+            if 'c2w' in mats:
+                c2w = mats['c2w']
+            elif 'world_mat' in mats:
+                c2w = np.linalg.inv(mats['world_mat'])
+            else:
+                continue
+            pos_list.append(c2w[:3, 3])          # camera position
+            dir_list.append(c2w[:3, 2])          # forward direction
+        if pos_list:
+            self.positions = np.vstack(pos_list)
+            self.view_directions = np.vstack(dir_list)
 
+    @staticmethod
+    def _angular_distance_matrix(dirs: np.ndarray, in_degrees: bool = False) -> np.ndarray:
+        # Compute angular distances between all direction pairs
         norms = np.linalg.norm(dirs, axis=1, keepdims=True)
-        dirs_normalized = dirs / np.maximum(norms, 1e-8)
-        return np.clip(dirs_normalized @ dirs_normalized.T, -1.0, 1.0)
+        dirs_norm = dirs / np.maximum(norms, 1e-8)
+        cos_mat = np.clip(dirs_norm @ dirs_norm.T, -1.0, 1.0)
+        angles = np.arccos(cos_mat)
+        return np.degrees(angles) if in_degrees else angles
 
-    def angular_distance_matrix(self, dirs, use_degrees=False):
-        """
-        (N,N) matrix of angular distances
-        """
-        cosM = self.cosine_similarity_matrix(dirs)
-        angles = np.arccos(np.clip(cosM, -1.0, 1.0))
-        if use_degrees:
-            angles = np.degrees(angles)
-        return angles
+    def analyze_optimal_k(self, min_k: int = 3, max_k: int = None) -> int:
+        n = len(self.positions)
+        max_k = max_k or min(15, max(min_k + 1, n // 2))
+        best_score = -np.inf
+        best_k = min_k
+        X_norm, center, scale = self._normalize_positions(self.positions)
+        for k in range(min_k, max_k + 1):
+            km = KMeans(n_clusters=k, n_init=10, random_state=42)
+            labels = km.fit_predict(X_norm)
+            # Coverage: average spatial spread + angular diversity per cluster
+            cov = 0.0
+            for c in range(k):
+                idxs = np.where(labels == c)[0]
+                pts = self.positions[idxs]
+                dirs = self.view_directions[idxs]
+                if len(idxs) < 1:
+                    continue
+                spread = float(np.mean(np.std(pts, axis=0))) if len(idxs) > 1 else 0.0
+                if len(idxs) > 1:
+                    angs = self._angular_distance_matrix(dirs, in_degrees=True)
+                    tri_idxs = np.triu_indices(len(idxs), k=1)
+                    ang_div = float(np.mean(angs[tri_idxs]))
+                else:
+                    ang_div = 90.0
+                cov += spread + ang_div / 180.0
+            cov /= k
+            # Compactness: negative inertia normalized by total variance
+            compact = -km.inertia_ / (np.linalg.norm(X_norm) + 1e-8)
+            score = 0.4 * cov + 0.6 * compact
+            if score > best_score:
+                best_score = score
+                best_k = k
+        return best_k
 
-    def compute_angle_similarity(self, directions1, directions2):
-        """
-        Compute angular similarity between camera viewing directions.
-        Returns angles in degrees between direction vectors.
-        """
+    def select_representative_cameras(
+        self,
+        min_cameras: int = 3,
+        max_cameras: int = None
+    ) -> Dict[str, Any]:
+        # Determine optimal cluster count
+        k = self.analyze_optimal_k(min_k=min_cameras, max_k=max_cameras)
+        X_norm, center, scale = self._normalize_positions(self.positions)
+        km = KMeans(n_clusters=k, n_init=10, random_state=42)
+        labels = km.fit_predict(X_norm)
 
-        dirs1_norm = directions1 / (np.linalg.norm(directions1, axis=1)[:, np.newaxis] + 1e-8)
-        dirs2_norm = directions1 / (np.linalg.norm(directions2, axis=1)[:, np.newaxis] + 1e-8)
-
-        dot_product = np.clip(np.sum(dirs1_norm * dirs2_norm, axis=1), -1.0, 1.0)
-        angles = np.arccos(np.abs(dot_product)) * 180 / np.pi
-
-        return angles
-    
-
-    def analyze_optimal_k(self, min_k=3, max_k=None):
-        """
-        Improved method to determine optimal number of clusters.
-        Fixed scoring to prioritize scene coverage over clustering metrics.
-        """
-        if max_k is None:
-            max_k = min(15, len(self.positions) // 2)  # More reasonable upper bound
-            
-        max_k = max(min_k + 1, max_k) 
-        K = range(min_k, max_k + 1)
-        
-        # Use improved normalization
-        positions_normalized, _, _ = self.normalize_positions(self.positions)
-        
-        distortions = []
-        silhouette_scores = []
-        coverage_scores = []  # New: measure actual scene coverage
-        
-        for k in K:
-            kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-            labels = kmeans.fit_predict(positions_normalized)
-            
-            distortions.append(kmeans.inertia_)
-            
-            if k > 1:
-                silhouette_scores.append(silhouette_score(positions_normalized, labels))
-            else:
-                silhouette_scores.append(0)
-            
-            # Coverage score: combination of spatial spread and angular diversity
-            coverage_score = 0
-            for i in range(k):
-                cluster_mask = labels == i
-                if np.sum(cluster_mask) > 0:
-                    cluster_positions = self.positions[cluster_mask]
-                    cluster_directions = self.view_directions[cluster_mask]
-                    
-                    # Spatial spread within cluster
-                    if len(cluster_positions) > 1:
-                        spatial_spread = np.mean(np.std(cluster_positions, axis=0))
-                    else:
-                        spatial_spread = 0
-                    
-                    # Angular diversity within cluster  
-                    if len(cluster_directions) > 1:
-                        angles = self.angular_distance_matrix(cluster_directions, use_degrees=True)
-                        angular_diversity = np.mean(angles[np.triu_indices_from(angles, k=1)])
-                    else:
-                        angular_diversity = 90  # Single camera gets average score
-                    
-                    # Combined coverage for this cluster
-                    coverage_score += spatial_spread + angular_diversity / 180.0
-            
-            coverage_scores.append(coverage_score / k)  # Average per cluster
-        
-        # Normalize all metrics to [0,1]
-        norm_distortions = np.array(distortions)
-        norm_distortions = 1 - (norm_distortions - norm_distortions.min()) / (norm_distortions.max() - norm_distortions.min() + 1e-8)
-        
-        norm_silhouette = np.array(silhouette_scores)
-        if norm_silhouette.max() > norm_silhouette.min():
-            norm_silhouette = (norm_silhouette - norm_silhouette.min()) / (norm_silhouette.max() - norm_silhouette.min())
-        
-        norm_coverage = np.array(coverage_scores)
-        if norm_coverage.max() > norm_coverage.min():
-            norm_coverage = (norm_coverage - norm_coverage.min()) / (norm_coverage.max() - norm_coverage.min())
-        
-        # emphasize coverage and efficiency for 3D scenes
-        combined_score = (
-            0.3 * norm_distortions +    # Cluster compactness
-            0.3 * norm_silhouette +     # Cluster separation  
-            0.4 * norm_coverage 
-        )
-        
-        optimal_k = K[np.argmax(combined_score)]
-        print(f"Selected optimal k={optimal_k} based on improved scene coverage analysis")
-        
-        return optimal_k
-
-    def select_representative_cameras(self, min_cameras=3, max_cameras=None) -> Dict:
-        """
-        Camera selection focusing on scene coverage.
-        """
-        optimal_k = self.analyze_optimal_k(min_k=min_cameras, max_k=max_cameras)
-        
-        # Use improved normalization
-        positions_normalized, center, scale = self.normalize_positions(self.positions)
-        
-        kmeans = KMeans(n_clusters=optimal_k, random_state=42, n_init=10)
-        cluster_labels = kmeans.fit_predict(positions_normalized)
-        
-        selected_cameras = []
-        cluster_info = {
-            'sizes': {},
-            'mean_distances': {},
-            'cameras_in_cluster': {},
-            'view_direction_stats': {},
-            'coverage_scores': {}  # track coverage per cluster
-        }
-        
-        for cluster_idx in range(optimal_k):
-            cluster_mask = cluster_labels == cluster_idx
-            cluster_positions = self.positions[cluster_mask]
-            cluster_directions = self.view_directions[cluster_mask]
-            cluster_indices = np.where(cluster_mask)[0]
-            
-            cluster_info['sizes'][cluster_idx] = len(cluster_indices)
-            cluster_info['cameras_in_cluster'][cluster_idx] = cluster_indices.tolist()
-            
-            # Cluster statistics
-            cluster_center_norm = kmeans.cluster_centers_[cluster_idx]
-            cluster_center_world = cluster_center_norm * scale + center
-            distances = np.linalg.norm(cluster_positions - cluster_center_world, axis=1)
-            cluster_info['mean_distances'][cluster_idx] = float(np.mean(distances))
-            
-            # Improved view direction statistics
-            if len(cluster_directions) > 1:
-                angles = self.compute_angle_similarity(cluster_directions, cluster_directions)
-                cluster_info['view_direction_stats'][cluster_idx] = {
-                    'mean_angle': float(np.mean(angles)),
-                    'std_angle': float(np.std(angles)),
-                    'max_angle': float(np.max(angles))
-                }
-            else:
-                cluster_info['view_direction_stats'][cluster_idx] = {
-                    'mean_angle': 0.0, 'std_angle': 0.0, 'max_angle': 0.0
-                }
-            
-            # Improved selection within cluster
-            if len(cluster_indices) == 1:
-                selected_cameras.append(cluster_indices[0])
-                cluster_info['coverage_scores'][cluster_idx] = 1.0
-            else:
-                scores = []
-                for i, (pos, direction) in enumerate(zip(cluster_positions, cluster_directions)):
-                    # Distance to cluster center (normalized)
-                    pos_score = 1.0 / (1.0 + np.linalg.norm(pos - cluster_center_world))
-                    
-                    # Angular uniqueness within cluster
-                    other_dirs = np.delete(cluster_directions, i, axis=0)
-                    if len(other_dirs) > 0:
-                        angles_to_others = self.compute_angle_similarity(
-                            direction.reshape(1, -1), other_dirs
-                        )
-                        # Higher angle difference is better 
-                        angle_score = np.mean(angles_to_others) / 180.0
-                    else:
-                        angle_score = 1.0
-                    
-                    # Balanced scoring: position + uniqueness
-                    combined_score = 0.5 * pos_score + 0.5 * angle_score
-                    scores.append(combined_score)
+        selected: List[int] = []
+        cluster_info: Dict[int, Any] = {}
+        for c in range(k):
+            idxs = np.where(labels == c)[0]
+            pts = self.positions[idxs]
+            dirs = self.view_directions[idxs]
+            # Compute cluster world center
+            center_norm = km.cluster_centers_[c]
+            center_world = center_norm * scale + center
+            # Score each camera by proximity + angular uniqueness
+            scores: List[float] = []
+            for i in idxs:
+                dist = np.linalg.norm(self.positions[i] - center_world)
+                dist_score = 1.0 / (1.0 + dist)
                 
-                best_local_idx = np.argmax(scores)
-                selected_camera_idx = cluster_indices[best_local_idx]
-                selected_cameras.append(selected_camera_idx)
-                cluster_info['coverage_scores'][cluster_idx] = float(scores[best_local_idx])
-        
-        return {
-            'selected_indices': selected_cameras,
-            'n_selected': len(selected_cameras),
-            'cluster_info': cluster_info
-        }
+                # Fix: Create a mask to exclude current direction from others
+                current_dir_idx = np.where(idxs == i)[0][0]
+                other_indices = np.concatenate([
+                    np.arange(current_dir_idx), 
+                    np.arange(current_dir_idx + 1, len(dirs))
+                ])
+                
+                if len(other_indices) > 0:
+                    other_dirs = dirs[other_indices]
+                    # Combine current direction with other directions for distance calculation
+                    combined_dirs = np.vstack([self.view_directions[i][None, :], other_dirs])
+                    angs = self._angular_distance_matrix(combined_dirs, in_degrees=True)
+                    # Take distances from first row (current direction) to all others
+                    uniq_score = float(np.mean(angs[0, 1:])) / 180.0
+                else:
+                    uniq_score = 1.0
+                    
+                scores.append(0.5 * dist_score + 0.5 * uniq_score)
+            
+            # Pick best-scoring camera
+            best_idx = idxs[int(np.argmax(scores))]
+            selected.append(best_idx)
+            cluster_info[c] = {
+                'members': idxs.tolist(),
+                'selected': int(best_idx),
+                'score': float(np.max(scores))
+            }
+        return {'selected_indices': selected, 'cluster_info': cluster_info}

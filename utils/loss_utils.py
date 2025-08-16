@@ -12,6 +12,7 @@ import torch
 import torch.nn.functional as F
 from torch.autograd import Variable
 from math import exp
+from utils.embeds_utils import tensor_to_pil
 
 def l1_loss(network_output, gt):
     return torch.abs((network_output - gt)).mean()
@@ -73,18 +74,28 @@ def smooth_loss(disp, img):
 
     return grad_disp_x.mean() + grad_disp_y.mean()
 
-def segment_consistency_loss(features, positions, segments):
-    loss = 0.0
-    unique_segments = torch.unique(segments)
-    for seg_id in unique_segments:
-        mask = segments == seg_id
-        if mask.sum() < 2: continue
-        
-        # Position consistency with adaptive radius
-        positions_seg = positions[mask]
-        centroid = positions_seg.mean(dim=0)
-        position_variance = torch.mean(torch.norm(positions_seg - centroid, dim=1))
-        
-        loss += position_variance
+
+def compute_dino_loss(image, viewpoint_cam, scene, gt_embeddings, dino_encoder, 
+                     lambda_dino, iteration, render_every, use_dino_loss=True):
+
+    dino_loss = torch.tensor(0.0, device="cuda")
     
-    return loss / len(unique_segments) if len(unique_segments) > 0 else 0.0
+    if not (use_dino_loss and dino_encoder is not None and iteration % render_every == 0):
+        return dino_loss
+    
+    train_cameras = scene.getTrainCameras()
+    cam_idx = train_cameras.index(viewpoint_cam)
+    
+    if cam_idx not in gt_embeddings:
+        return dino_loss
+        
+    rendered_pil = tensor_to_pil(image)
+    
+    with torch.no_grad():
+        rendered_embedding = dino_encoder.encode_batch([rendered_pil]).squeeze(0)
+    
+    gt_embedding = gt_embeddings[cam_idx]
+    cosine_sim = F.cosine_similarity(rendered_embedding.unsqueeze(0), 
+                                   gt_embedding.unsqueeze(0), dim=1)
+    dino_loss = lambda_dino * (1.0 - cosine_sim.mean())
+    return dino_loss
