@@ -8,20 +8,29 @@
 # For inquiries contact  george.drettakis@inria.fr
 
 import os
+import csv
 import subprocess 
+import json
 import sys
 import torch
+import torchvision
+import torch.nn.functional as F
+from pathlib import Path
 from random import randint
-from utils.loss_utils import l1_loss, ssim, segment_consistency_loss
+from utils.loss_utils import l1_loss, ssim, dino_loss
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
+from utils.embeds_utils import tensor_to_pil, load_gt_embeddings
 import uuid
 from tqdm import tqdm
 from utils.image_utils import psnr, render_net_image
 from argparse import ArgumentParser, Namespace
+from identification.extraction.feature_extraction import DINOImageEncoder
 from arguments import ModelParams, PipelineParams, OptimizationParams
+
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 # Import LPIPS
 from lpipsPyTorch.modules.lpips import LPIPS
@@ -32,13 +41,50 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint):
+def training(dataset, opt, pipe,
+             testing_iterations,
+             saving_iterations,
+             checkpoint_iterations,
+             checkpoint,
+             render_indices=None,
+             render_every=1000,
+             use_dino_loss=True,
+             lambda_dino=0.1,
+             gt_embeddings_path=None):
+    
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
+
+    dino_encoder = None
+    gt_embeddings = {}
     
+    if use_dino_loss:
+        dino_encoder = DINOImageEncoder(batch_size=1)
+        
+        if gt_embeddings_path is None:
+            raise ValueError("gt_embeddings_path must be provided when use_dino_loss=True")
+        
+        gt_embeddings = load_gt_embeddings(gt_embeddings_path, scene.getTrainCameras())
+
+    if render_indices:
+        with open(render_indices, 'r') as f:
+             reader = csv.DictReader(f)
+             selected_indices = []
+             for row in reader:
+                stem = row['stem']
+                index = int(stem.split('_')[-1])
+                selected_indices.append(index)
+                 
+        # Get the sorted image_name list (as 2DGS does internally)
+        train_cams = scene.getTrainCameras()
+        sorted_train_cams = sorted(train_cams, key=lambda c: Path(c.image_name).stem)
+
+        # Map selected segmentation indices to the actual Camera objects
+        render_list = [train_cams.index(sorted_train_cams[i]) for i in selected_indices]
+
     # Initialize LPIPS loss
     lpips_loss = LPIPS(net_type='alex', version='0.1').cuda()
     
@@ -56,7 +102,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     ema_loss_for_log = 0.0
     ema_dist_for_log = 0.0
     ema_normal_for_log = 0.0
-    ema_segment_for_log = 0.0  # Removed LPIPS from training tracking
+    ema_dino_for_log = 0.0  # Add DINO loss tracking
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
@@ -76,15 +122,26 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-        
+
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         
+        dino_loss = dino_loss(
+            image=image,
+            viewpoint_cam=viewpoint_cam,
+            scene=scene,
+            gt_embeddings=gt_embeddings,
+            dino_encoder=dino_encoder,
+            lambda_dino=lambda_dino,
+            iteration=iteration,
+            render_every=render_every,
+            use_dino_loss=use_dino_loss
+        )
+
         # Regular regularization terms
         lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0
         lambda_dist = opt.lambda_dist if iteration > 3000 else 0.0
-        lambda_segment = opt.lambda_segment if iteration > 0 and iteration < 7000 else 0.0
 
         rend_dist = render_pkg["rend_dist"]
         rend_normal = render_pkg['rend_normal']
@@ -93,40 +150,73 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         normal_loss = lambda_normal * (normal_error).mean()
         dist_loss = lambda_dist * (rend_dist).mean()
 
-        # Segment consistency loss
-        if lambda_segment > 0:
-            visible_features = gaussians.get_features[visibility_filter]
-            visible_positions = gaussians.get_xyz[visibility_filter]
-            visible_segments = gaussians._segments[visibility_filter]
-            
-            segment_loss = lambda_segment * segment_consistency_loss(
-                visible_features, 
-                visible_positions, 
-                visible_segments
-            )
-        else:
-            segment_loss = torch.tensor(0.0, device='cuda')
-
-        # Combined loss (no LPIPS in training loss)
-        total_loss = loss + dist_loss + normal_loss + segment_loss
+        # Include DINO loss in total loss
+        total_loss = loss + dist_loss + normal_loss + dino_loss
         
         total_loss.backward()
 
         iter_end.record()
 
+        if render_indices and (iteration % render_every == 0):
+            try:
+                torch.cuda.empty_cache()
+                with open(render_indices, 'r') as f:
+                    reader = csv.DictReader(f)
+                    selected_inds = []
+                    for row in reader:
+                        stem = row['stem']
+                        index = int(stem.split('_')[-1])
+                        selected_inds.append(index)
+                
+                if not selected_inds:
+                    print(f"[Iter {iteration}] No valid indices found")
+                    continue
+
+                train_cams = scene.getTrainCameras()
+                sorted_train_cams = sorted(train_cams, key=lambda c: Path(c.image_name).stem)
+                
+                out_dir = os.path.join(dataset.model_path, "renders", f"iter_{iteration}")
+                os.makedirs(out_dir, exist_ok=True)
+                
+                successful_renders = 0
+                for idx in selected_inds:
+                    try:
+                        if 0 <= idx < len(sorted_train_cams):
+                            torch.cuda.empty_cache()
+                            cam = sorted_train_cams[idx]
+                            original_resolution = cam.image_width, cam.image_height
+                            cam.image_width = cam.image_width // 2
+                            cam.image_height = cam.image_height // 2
+                            with torch.no_grad():
+                                render_pkg = render(cam, gaussians, pipe, background)
+                                image = render_pkg['render'].clamp(0, 1)
+                            cam.image_width, cam.image_height = original_resolution
+                            torchvision.utils.save_image(
+                                image, 
+                                os.path.join(out_dir, f"view_{idx:03d}.png")
+                            )
+                            successful_renders += 1
+                    except Exception as e:
+                        print(f"[Error] Failed to render view {idx}: {str(e)}")
+                        continue
+
+                print(f"[Iter {iteration}] Rendered {successful_renders}/{len(selected_inds)} views to {out_dir}")
+            except Exception as e:
+                print(f"[Error] During rendering block: {str(e)}")
+
         with torch.no_grad():
-            # Progress bar
+            # Progress bar - now including DINO loss
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             ema_dist_for_log = 0.4 * dist_loss.item() + 0.6 * ema_dist_for_log
             ema_normal_for_log = 0.4 * normal_loss.item() + 0.6 * ema_normal_for_log
-            ema_segment_for_log = 0.4 * segment_loss.item() + 0.6 * ema_segment_for_log
+            ema_dino_for_log = 0.4 * dino_loss.item() + 0.6 * ema_dino_for_log
 
             if iteration % 10 == 0:
                 loss_dict = {
                     "Loss": f"{ema_loss_for_log:.{5}f}",
                     "distort": f"{ema_dist_for_log:.{5}f}",
                     "normal": f"{ema_normal_for_log:.{5}f}",
-                    "segment": f"{ema_segment_for_log:.{5}f}",
+                    "dino": f"{ema_dino_for_log:.{5}f}",  
                     "Points": f"{len(gaussians.get_xyz)}"
                 }
                 progress_bar.set_postfix(loss_dict)
@@ -139,7 +229,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if tb_writer is not None:
                 tb_writer.add_scalar('train_loss_patches/dist_loss', ema_dist_for_log, iteration)
                 tb_writer.add_scalar('train_loss_patches/normal_loss', ema_normal_for_log, iteration)
-                tb_writer.add_scalar('train_loss_patches/segment_loss', ema_segment_for_log, iteration)
+                tb_writer.add_scalar('train_loss_patches/dino_loss', ema_dino_for_log, iteration)
 
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background), lpips_loss)
             if (iteration in saving_iterations):
@@ -295,8 +385,10 @@ if __name__ == "__main__":
     parser.add_argument('--ip', type=str, default="127.0.0.1")
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 30_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 30_000])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7000,30000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7000, 30000])
+    parser.add_argument("--render_indices", type=str, default=None, help="Path to JSON file listing train‐camera indices to render")
+    parser.add_argument("--render_every", type=int, default=1000, help="How often (in iterations) to quick-render those views")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
@@ -313,16 +405,15 @@ if __name__ == "__main__":
         try:
             seg_output_path = os.path.join("identification", "results")
             os.makedirs(seg_output_path, exist_ok=True)
-            main_script_path = os.path.join("identification", "main.py")
-            
+
             # Run segmentation
             subprocess.run([
                 sys.executable,
-                main_script_path,
+                "-m", "identification.main",
                 "-s", args.source_path,
                 "-o", seg_output_path,
                 "-t", args.dataset_type
-            ], check=True)
+            ], check=True, cwd=os.path.dirname(os.path.abspath(__file__)))
             print("Segmentation completed successfully!")
 
         except subprocess.CalledProcessError as e:
@@ -336,7 +427,7 @@ if __name__ == "__main__":
 
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.render_indices, args.render_every)
 
     # All done
     print("\nTraining complete.")

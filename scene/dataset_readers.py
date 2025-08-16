@@ -111,22 +111,65 @@ def fetchPly(path):
     colors = np.vstack([vertices['red'], vertices['green'], vertices['blue']]).T / 255.0
     normals = np.vstack([vertices['nx'], vertices['ny'], vertices['nz']]).T
     
-    # Load segments from file directly
-    segment_path = os.path.join("identification", "results", "segments", "point_cloud", "segment_indices.npy")
-    try:
-        segments = np.load(segment_path)
-        print(f"Loaded {len(segments)} segment indices")  
-    except Exception as e:
-        print(f"Could not load segments ({str(e)}), initializing with zeros")
-        segments = np.zeros(len(positions), dtype=np.int32)
+    # Load segments
+    segment_paths = [
+        os.path.join("identification", "results", "segments", "point_cloud", "segment_indices.npy"),
+        os.path.join("segmentation", "results", "point_cloud", "segment_indices.npy"), 
+    ]
     
-    return BasicPointCloud(points=positions, colors=colors, normals=normals, segments=segments)
+    segments = None
+    for segment_path in segment_paths:
+        try:
+            segments = np.load(segment_path)
+            print(f"Loaded {len(segments)} segment indices from {segment_path}")
+            break
+        except Exception as e:
+            print(f"Could not load segments from {segment_path}: {str(e)}")
+            continue
+    
+    if segments is None:
+        segments = np.zeros(len(positions), dtype=np.int32)
+        print("No segments found, using zeros")
+    
+    # Load mask areas
+    mask_area_paths = [
+        os.path.join("identification", "results", "segments", "point_cloud", "mask_areas.npy"),
+        os.path.join("segmentation", "results", "point_cloud", "mask_areas.npy"),
+    ]
+    
+    mask_areas = {}
+    for mask_area_path in mask_area_paths:
+        try:
+            mask_areas = np.load(mask_area_path, allow_pickle=True).item()
+            break
+        except Exception as e:
+            print(f"Could not load mask areas from {mask_area_path}: {str(e)}")
+            continue
+    
+    if not mask_areas:
+        print("No mask areas found, using empty dict")
+    
+    if len(segments) != len(positions):
+        if len(segments) < len(positions):
+            positions = positions[:len(segments)]
+            colors = colors[:len(segments)]
+            normals = normals[:len(segments)]
+        else:
+            segments = segments[:len(positions)]
+        print(f"After adjustment: Points={len(positions)}, Segments={len(segments)}")
+    
+    return BasicPointCloud(
+        points=positions, 
+        colors=colors, 
+        normals=normals, 
+        segments=segments,
+        mask_areas=mask_areas
+    )
 
-def storePly(path, xyz, rgb):
-    # Define the dtype for the structured array
+def storePly(path, xyz, rgb, segments=None):
     dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
             ('nx', 'f4'), ('ny', 'f4'), ('nz', 'f4'),
-            ('red', 'u1'), ('green', 'u1'), ('blue', 'u1'), ('segment', 'i4')] # Add segment field
+            ('red', 'u1'), ('green', 'u1'), ('blue', 'u1'), ('segment', 'i4')]
     
     normals = np.zeros_like(xyz)
     if segments is None:
@@ -136,7 +179,6 @@ def storePly(path, xyz, rgb):
     attributes = np.concatenate((xyz, normals, rgb, segments[:, None]), axis=1)
     elements[:] = list(map(tuple, attributes))
 
-    # Create the PlyData object and write to file
     vertex_element = PlyElement.describe(elements, 'vertex')
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
@@ -166,34 +208,44 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
 
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
-    ply_path = os.path.join(path, "sparse/0/points3D.ply")
-    bin_path = os.path.join(path, "sparse/0/points3D.bin")
-    txt_path = os.path.join(path, "sparse/0/points3D.txt")
-    if not os.path.exists(ply_path):
-        print("Converting point3d.bin to .ply, will happen only the first time you open the scene.")
-        try:
-            xyz, rgb, _ = read_points3D_binary(bin_path)
-            # Load segments
-            segment_path = "/data1/alex/2d-gaussian-splatting/segmentation/results/point_cloud/segment_indices.npy"
+    cleaned_ply_paths = [
+        os.path.join("identification", "results", "segments", "point_cloud", "segmented_point_cloud.ply"),
+        os.path.join("segmentation", "results", "point_cloud", "segmented_point_cloud.ply"),
+    ]
+    
+    ply_path = None
+    for cleaned_path in cleaned_ply_paths:
+        if os.path.exists(cleaned_path):
+            ply_path = cleaned_path
+            print(f"Using cleaned point cloud")
+            break
+    
+    # Fallback to original COLMAP point cloud
+    if ply_path is None:
+        ply_path = os.path.join(path, "sparse/0/points3D.ply")
+        bin_path = os.path.join(path, "sparse/0/points3D.bin")
+        txt_path = os.path.join(path, "sparse/0/points3D.txt")
+        print(f"No cleaned point cloud found, using original: {ply_path}")
+        
+        if not os.path.exists(ply_path):
+            print("Converting point3d.bin to .ply, will happen only the first time you open the scene.")
             try:
-                segments = np.load(segment_path)
-                print(f"Loaded {len(segments)} segment indices during initial conversion")
-            except:
-                print("Could not load segments during conversion, using zeros")
-                segments = np.zeros(len(xyz), dtype=np.int32)
-            
-            storePly(ply_path, xyz, rgb, segments)
-        except:
-            try:
-                xyz, rgb, _ = read_points3D_text(txt_path)
+                xyz, rgb, _ = read_points3D_binary(bin_path)
+                # NOTE: When converting original COLMAP data, segments will be zeros
                 segments = np.zeros(len(xyz), dtype=np.int32)
                 storePly(ply_path, xyz, rgb, segments)
-            except Exception as e:
-                print(f"Failed to read points3D: {e}")
-                return None
+            except:
+                try:
+                    xyz, rgb, _ = read_points3D_text(txt_path)
+                    segments = np.zeros(len(xyz), dtype=np.int32)
+                    storePly(ply_path, xyz, rgb, segments)
+                except Exception as e:
+                    print(f"Failed to read points3D: {e}")
+                    return None
     
     try:
         pcd = fetchPly(ply_path)
+        print(f"Loaded point cloud with {len(pcd.segments)} segments")
     except Exception as e:
         print(f"Error loading PLY file: {e}")
         return None
