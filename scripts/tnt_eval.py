@@ -10,7 +10,6 @@
 
 import os
 from argparse import ArgumentParser
-
 import sys
 from pathlib import Path
 
@@ -18,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]  # parent of scripts/
 PY = sys.executable
 
 # Tanks and Temples scenes (lowercase to match typical folder names)
-tnt_360_scenes  = ["barn", "caterpillar", "ignatius", "truck"]
+tnt_360_scenes = ["barn", "caterpillar", "ignatius", "truck"]
 tnt_large_scenes = ["meetingroom", "courthouse"]
 
 parser = ArgumentParser(description="Full evaluation script parameters")
@@ -26,6 +25,7 @@ parser.add_argument("--skip_training", action="store_true")
 parser.add_argument("--skip_rendering", action="store_true")
 parser.add_argument("--skip_metrics", action="store_true")
 parser.add_argument("--output_path", default="eval/tnt")
+parser.add_argument("--clean_pc", action="store_true", help="Apply hull removal filtering to point clouds")  # New argument
 args, _ = parser.parse_known_args()
 
 all_scenes = []
@@ -37,8 +37,13 @@ if not args.skip_training or not args.skip_rendering:
     args = parser.parse_args()
 
 if not args.skip_training:
-    # Run your segmentation pass during training (seg losses zeroed)
-    seg_args = " --dataset_type nerf --run_segmentation --lambda_normal 0.00 --lambda_dist 0.00 --lambda_segment 0.00"
+    # Base segmentation arguments
+    seg_args = " --dataset_type tyt --run_segmentation --lambda_normal 0.00 --lambda_dist 0.00 --lambda_segment 0.00"
+    
+    # Add clean flag if specified
+    if args.clean_pc:
+        seg_args += " --clean"
+    
     common_args = " --quiet --eval --test_iterations -1" + seg_args
 
     for scene in tnt_360_scenes:
