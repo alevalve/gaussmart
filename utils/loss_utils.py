@@ -12,7 +12,6 @@ import torch
 import torch.nn.functional as F
 from torch.autograd import Variable
 from math import exp
-from utils.embeds_utils import tensor_to_pil
 
 def l1_loss(network_output, gt):
     return torch.abs((network_output - gt)).mean()
@@ -75,27 +74,16 @@ def smooth_loss(disp, img):
     return grad_disp_x.mean() + grad_disp_y.mean()
 
 
-def compute_dino_loss(image, viewpoint_cam, scene, gt_embeddings, dino_encoder, 
-                     lambda_dino, iteration, render_every, use_dino_loss=True):
-
-    dino_loss = torch.tensor(0.0, device="cuda")
+def dino_loss(rendered_image, gt_image, dino_encoder, lambda_dino):
+    """
+    Optimized DINO loss using tensor operations only
+    """
+    # Get embeddings directly from tensors
+    with torch.inference_mode():
+        rendered_embedding = dino_encoder.encode_tensor(rendered_image)
+        gt_embedding = dino_encoder.encode_tensor(gt_image)
     
-    if not (use_dino_loss and dino_encoder is not None and iteration % render_every == 0):
-        return dino_loss
-    
-    train_cameras = scene.getTrainCameras()
-    cam_idx = train_cameras.index(viewpoint_cam)
-    
-    if cam_idx not in gt_embeddings:
-        return dino_loss
-        
-    rendered_pil = tensor_to_pil(image)
-    
-    with torch.no_grad():
-        rendered_embedding = dino_encoder.encode_batch([rendered_pil]).squeeze(0)
-    
-    gt_embedding = gt_embeddings[cam_idx]
-    cosine_sim = F.cosine_similarity(rendered_embedding.unsqueeze(0), 
+    # Compute cosine similarity loss
+    cosine_sim = F.cosine_similarity(rendered_embedding.unsqueeze(0),
                                    gt_embedding.unsqueeze(0), dim=1)
-    dino_loss = lambda_dino * (1.0 - cosine_sim.mean())
-    return dino_loss
+    return lambda_dino * (1.0 - cosine_sim.mean())
