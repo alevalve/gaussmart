@@ -48,7 +48,7 @@ def training(dataset, opt, pipe,
              saving_iterations,
              checkpoint_iterations,
              checkpoint,
-             use_dino_loss=True,
+             use_dino_loss=False,
              lambda_dino=0.5):
     
     first_iter = 0
@@ -68,8 +68,8 @@ def training(dataset, opt, pipe,
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
     
-    if use_dino_loss:
-        dino_encoder = DINOImageEncoder()
+    
+    dino_encoder = DINOImageEncoder()
 
     # Initialize LPIPS loss
     lpips_loss = LPIPS(net_type='alex', version='0.1').cuda()
@@ -114,9 +114,7 @@ def training(dataset, opt, pipe,
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         
         # DINO loss 
-        d_loss = torch.tensor(0.0, device="cuda")
-        if use_dino_loss and dino_encoder is not None:
-            d_loss = dino_loss(image, gt_image, dino_encoder, lambda_dino)
+        d_loss = dino_loss(image, gt_image, dino_encoder, lambda_dino)
 
         # Regular regularization terms
         lambda_normal = opt.lambda_normal if iteration > 7000 else 0.0
@@ -135,20 +133,6 @@ def training(dataset, opt, pipe,
         total_loss.backward()
 
         iter_end.record()
-
-        # Save DINO loss every 1000 iterations
-        if iteration % 1000 == 0:
-            with open(dino_loss_log_path, 'a', newline='') as csvfile:
-                fieldnames = ['iteration', 'dino_loss', 'total_loss', 'l1_loss', 'dist_loss', 'normal_loss']
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                writer.writerow({
-                    'iteration': iteration,
-                    'dino_loss': d_loss.item(),
-                    'total_loss': total_loss.item(),
-                    'l1_loss': Ll1.item(),
-                    'dist_loss': dist_loss.item(),
-                    'normal_loss': normal_loss.item()
-                })
             
 
         with torch.no_grad():
@@ -206,7 +190,6 @@ def training(dataset, opt, pipe,
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
 
-            # GUI update (rest of your existing code)
             if network_gui.conn == None:
                 network_gui.try_connect(dataset.render_items)
             while network_gui.conn != None:
@@ -267,7 +250,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 l1_test = 0.0
                 psnr_test = 0.0
                 ssim_test = 0.0
-                lpips_test = 0.0  # Add LPIPS evaluation
+                lpips_test = 0.0  
                 
                 for idx, viewpoint in enumerate(config['cameras']):
                     render_pkg = renderFunc(viewpoint, scene.gaussians, *renderArgs)
