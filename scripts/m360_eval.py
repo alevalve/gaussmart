@@ -19,8 +19,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]  # parent of scripts/
 PY = sys.executable
 
 
-mipnerf360_outdoor_scenes = ["treehill", "garden","stump","bicycle", "flowers"]
-mipnerf360_indoor_scenes = ["counter", "room", "kitchen", "bonsai"]
+#mipnerf360_outdoor_scenes = ["treehill", "garden","stump","bicycle", "flowers"]
+mipnerf360_indoor_scenes = ["kitchen", "bonsai"]
 # tanks_and_temples_scenes = ["truck", "train"]
 # deep_blending_scenes = ["drjohnson", "playroom"] 
 
@@ -34,7 +34,7 @@ parser.add_argument("--clean_pc", action="store_true", help="Apply hull removal 
 args, _ = parser.parse_known_args()
 
 all_scenes = []
-all_scenes.extend(mipnerf360_outdoor_scenes)
+#all_scenes.extend(mipnerf360_outdoor_scenes)
 all_scenes.extend(mipnerf360_indoor_scenes)
 # all_scenes.extend(tanks_and_temples_scenes)
 # all_scenes.extend(deep_blending_scenes)
@@ -52,9 +52,9 @@ if not args.skip_training:
     if args.clean_pc:
         seg_args += " --clean"
 
-    for scene in mipnerf360_outdoor_scenes:
-        source = args.mipnerf360 + "/" + scene
-        os.system(f"{PY} {REPO_ROOT/'train.py'} -s {source} -i images -m {args.output_path}/{scene}{common_args}")
+    #for scene in mipnerf360_outdoor_scenes:
+        #source = args.mipnerf360 + "/" + scene
+        #os.system(f"{PY} {REPO_ROOT/'train.py'} -s {source} -i images -m {args.output_path}/{scene}{common_args}")
 
     for scene in mipnerf360_indoor_scenes:
         source = args.mipnerf360 + "/" + scene
@@ -67,8 +67,8 @@ if not args.skip_training:
 
 if not args.skip_rendering:
     all_sources = []
-    for scene in mipnerf360_outdoor_scenes:
-        all_sources.append(args.mipnerf360 + "/" + scene)
+    #for scene in mipnerf360_outdoor_scenes:
+        #all_sources.append(args.mipnerf360 + "/" + scene)
     for scene in mipnerf360_indoor_scenes:
        all_sources.append(args.mipnerf360 + "/" + scene)
     # for scene in tanks_and_temples_scenes:

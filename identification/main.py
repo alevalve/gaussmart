@@ -5,7 +5,6 @@ import open3d as o3d
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
-from identification.extraction.image_encoder import process_images
 from filter.hull_removal import HullRemoval
 from identification.process_selected_views import ProcessSelectedViews
 from identification.sam import SAMSegmentation
