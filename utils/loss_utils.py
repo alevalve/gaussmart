@@ -76,15 +76,37 @@ def smooth_loss(disp, img):
 
 def dino_loss(rendered_image, gt_image, dino_encoder, lambda_dino):
     """
-    DINO loss using L2 distance instead of cosine similarity
+    Optimized DINO loss using tensor operations only
     """
     # Get embeddings directly from tensors
     with torch.inference_mode():
         rendered_embedding = dino_encoder.encode_tensor(rendered_image)
         gt_embedding = dino_encoder.encode_tensor(gt_image)
-    
+
+    # Compute cosine similarity loss
+    cosine_sim = F.cosine_similarity(
+        rendered_embedding.unsqueeze(0),
+        gt_embedding.unsqueeze(0),
+        dim=1
+    )
+    lambda_dino_fp16 = torch.tensor(
+        lambda_dino,
+        dtype=torch.float16,
+        device=rendered_embedding.device
+    )
+    return lambda_dino_fp16 * (1.0 - cosine_sim.mean())
+
+
+#def dino_loss_l2(rendered_image, gt_image, dino_encoder, lambda_dino):
+    #"""
+   #DINO loss using L2 distance instead of cosine similarity
+    #"""
+    # Get embeddings directly from tensors
+    #with torch.inference_mode():
+    #    rendered_embedding = dino_encoder.encode_tensor(rendered_image)
+    #
     # L2 distance between embeddings
-    l2_distance = F.mse_loss(rendered_embedding, gt_embedding, reduction='mean')
-    
-    lambda_dino_fp16 = torch.tensor(lambda_dino, dtype=torch.float16, device=rendered_embedding.device)
-    return lambda_dino_fp16 * l2_distance
+    #l2_distance = F.mse_loss(rendered_embedding, gt_embedding, reduction='mean')
+    #
+    #lambda_dino_fp16 = torch.tensor(lambda_dino, dtype=torch.float16, device=rendered_embedding.device)
+    #return lambda_dino_fp16 * l2_distance
