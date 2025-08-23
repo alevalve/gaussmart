@@ -22,6 +22,10 @@ if not args.skip_metrics:
 if not args.skip_training:
     seg_args = " --dataset_type dtu --run_segmentation --lambda_normal 0.00 --lambda_segment 0.00"
     common_args = " --quiet --test_iterations -1 --depth_ratio 1.0 -r 2 --lambda_dist 0.00" + seg_args
+
+    if args.clean_pc:
+        seg_args += " --clean"
+        
     for scene in dtu_scenes:
         source = args.dtu + "/" + scene
         print("python train.py -s " + source + " -m " + args.output_path + "/" + scene + common_args)
