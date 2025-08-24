@@ -5,12 +5,15 @@ import math
 from transformers import AutoImageProcessor, AutoModel
 from typing import Optional, Tuple
 from typing import List
+import os
 from PIL import Image
 from huggingface_hub import login
 
 
 
-login(token="")
+token = os.getenv("HUGGINGFACE_HUB_TOKEN")
+login(token=token)
+
 
 class DINOImageEncoder(nn.Module):
     def __init__(self, pretrained_model_name: str = "facebook/dinov3-vitb16-pretrain-lvd1689m"):
