@@ -28,7 +28,7 @@ import uuid
 from tqdm import tqdm
 from utils.image_utils import psnr, render_net_image
 from argparse import ArgumentParser, Namespace
-from identification.extraction.feature_extraction import DINOImageEncoder
+from identification.feature_extraction import DINOImageEncoder
 from arguments import ModelParams, PipelineParams, OptimizationParams
 
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
