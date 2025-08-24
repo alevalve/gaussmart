@@ -1,6 +1,8 @@
 import torch
 import numpy as np
 from segment_anything import SamAutomaticMaskGenerator, sam_model_registry
+from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+from sam2.sam2_image_predictor import SAM2ImagePredictor
 from typing import List, Dict
 import os
 import cv2
@@ -11,12 +13,18 @@ class SAMSegmentation:
     Class for performing segmentation using the Segment Anything Model (SAM).
     Handles model initialization, image processing, and visualization of results.
     """
-    def __init__(self, checkpoint_path: str, device: str = "cuda" if torch.cuda.is_available() else "cpu"):
+    def __init__(self, checkpoint_path: str, device: str = "cuda" if torch.cuda.is_available() else "cpu", model: str = "sam"):
         """Initialize SAM model and automatic mask generator"""
-        print(f"\nInitializing SAM with device: {device}")
-        self.device = device
-        self.checkpoint_path = checkpoint_path
-        self._initialize_model(device)
+        if model == "sam2":
+            print(f"\nInitializing SAM2 with device: {device}")
+            self._initialize_sam2()
+        elif model == "sam":
+            print(f"\nInitializing SAM with device: {device}")
+            self.device = device
+            self.checkpoint_path = checkpoint_path
+            self._initialize_model(device)
+        else:
+            assert False, f"Unsupported segmentation model {model}"
         
     def _initialize_model(self, device: str):
         """Initialize the model on the specified device, fallback to CPU if OOM occurs"""
@@ -34,6 +42,23 @@ class SAMSegmentation:
         # Initialize the mask generator
         self.mask_generator = SamAutomaticMaskGenerator(
             self.sam,
+            points_per_side=32,
+            pred_iou_thresh=0.86,
+            stability_score_thresh=0.92
+        )
+
+    def _initialize_sam2(self):
+        """Initialize the model on the specified device, fallback to CPU if OOM occurs"""
+        try:
+            self.sam = SAM2ImagePredictor.from_pretrained("facebook/sam2-hiera-large")
+        except torch.cuda.OutOfMemoryError:
+            print("GPU out of memory! Reverting to CPU mode...")
+            torch.cuda.empty_cache()
+            self.sam = SAM2ImagePredictor.from_pretrained("facebook/sam2-hiera-large")
+            
+        # Initialize the mask generator
+        self.mask_generator = SAM2AutomaticMaskGenerator(
+            self.sam.model,
             points_per_side=32,
             pred_iou_thresh=0.86,
             stability_score_thresh=0.92

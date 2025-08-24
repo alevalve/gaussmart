@@ -23,6 +23,7 @@ git+https://github.com/huggingface/transformers.git
 tokenizers==0.21.4
 safetensors==0.6.2
 segment-anything==1.0
+sam2==1.1.0
 lpips==0.1.4
 
 # Deep Learning utilities
