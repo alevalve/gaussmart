@@ -43,7 +43,7 @@ class GaussianModel:
         self.rotation_activation = torch.nn.functional.normalize
 
 
-    def __init__(self, sh_degree : int):
+    def __init__(self, sh_degree : int, uniform_upsampling: bool = False):
         self.active_sh_degree = 0
         self.max_sh_degree = sh_degree  
         self._xyz = torch.empty(0)
@@ -59,6 +59,7 @@ class GaussianModel:
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
+        self.uniform_upsampling = uniform_upsampling
         self.setup_functions()
 
 
@@ -242,6 +243,17 @@ class GaussianModel:
                 features = torch.cat([features, new_features])
                 
                 print(f"Total augmented points: {len(new_points)}")
+        
+        elif self.uniform_upsampling:
+            print("Performing uniform augmentation...")
+            points_to_add = max(int(len(fused_point_cloud) * 0.1), 10)
+            new_points, new_colors = self.augment_segment_points(
+                fused_point_cloud, fused_color, points_to_add
+            )
+            fused_point_cloud = torch.cat([fused_point_cloud, new_points])
+            new_features = torch.zeros((len(new_points), 3, (self.max_sh_degree + 1) ** 2)).float().cuda()
+            new_features[:, :3, 0] = new_colors
+            features = torch.cat([features, new_features])
         
         print(f"Final point count: {fused_point_cloud.shape[0]}")
         

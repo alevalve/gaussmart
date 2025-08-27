@@ -14,10 +14,12 @@ from identification.pc_projection import project_points_to_view, assign_segment_
 class Pipeline:
     """Clutering/Segmentation/Projection pipeline."""
     
-    def __init__(self, scan_path: str, output_path: str, dataset_type: str):
-        self.scan_path = scan_path
-        self.output_path = output_path
-        self.dataset_type = dataset_type.lower()
+    def __init__(self, args):
+        self.scan_path = args.scan_path
+        self.output_path = args.output_path
+        self.dataset_type = args.type.lower()
+        self.cluster_cameras = not args.skip_camera_clustering
+        self.sam2 = args.sam2
         self.dirs = self._setup_directories()
         
     def _setup_directories(self) -> Dict[str, str]:
@@ -54,7 +56,7 @@ class Pipeline:
         _, camera_path = self._get_paths()
         image_root = os.path.join(self.scan_path, 'images')
         
-        processor = ProcessSelectedViews(camera_path, image_root, self.output_path, self.dataset_type)
+        processor = ProcessSelectedViews(camera_path, image_root, self.output_path, self.dataset_type, self.cluster_cameras)
         sel_info = processor.process_views()
         selected_indices = sel_info['selected_indices']
         selected_data = processor.get_selected_data(selected_indices, already_mapped=True)
@@ -73,7 +75,7 @@ class Pipeline:
     def run_sam_segmentation(self, selected_data: Dict) -> List[List[Dict]]:
         """Run SAM segmentation on selected views."""
         weights_path = os.path.join(Path(__file__).resolve().parent, 'weights', 'sam_vit_h_4b8939.pth')
-        segmenter = SAMSegmentation(weights_path)
+        segmenter = SAMSegmentation(weights_path, sam2=self.sam2)
         
         all_masks = []
         for i, image_path in enumerate(selected_data['image_paths']):
@@ -193,11 +195,13 @@ def main():
     parser.add_argument('-s', '--scan_path', required=True, help='Path to scan folder')
     parser.add_argument('-o', '--output_path', required=True, help='Output directory')
     parser.add_argument('-t', '--type', choices=['dtu', 'nerf', 'tyt'], required=True, help='Dataset type')
+    parser.add_argument('--skip_camera_clustering', action='store_true', help='Skip camera clustering')
+    parser.add_argument('--sam2', action='store_true', help='Use SAM2 instead of SAM1')
     parser.add_argument('--clean', action='store_true', help='Apply hull removal filtering to point cloud')
     
     args = parser.parse_args()
     
-    pipeline = Pipeline(args.scan_path, args.output_path, args.type)
+    pipeline = Pipeline(args)
     segment_indices, mask_areas = pipeline.run(clean_pc=args.clean)
     
 

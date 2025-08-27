@@ -55,6 +55,7 @@ class ModelParams(ParamGroup):
         self.data_device = "cuda"
         self.eval = False
         self.render_items = ['RGB', 'Alpha', 'Normal', 'Depth', 'Edge', 'Curvature']
+        self.uniform_upsampling = False
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):

@@ -11,11 +11,12 @@ except ImportError:
     from clustering_cameras import CameraClustering
 
 class ProcessSelectedViews:
-    def __init__(self, camera_path: str, images_dir: str, output_dir: str, dataset_type: str = None):
+    def __init__(self, camera_path: str, images_dir: str, output_dir: str, dataset_type: str = None, cluster_cameras: bool = True):
         self.camera_path = camera_path
         self.images_dir = images_dir
         self.output_dir = output_dir
         self.dataset_type = dataset_type 
+        self.cluster_cameras = cluster_cameras
         self.analyzer = None
         self.clusterer = None
         self.setup()
@@ -42,8 +43,11 @@ class ProcessSelectedViews:
 
     def process_views(self) -> Dict:
         """Process and save selected views"""
-        selection_results = self.clusterer.select_representative_cameras()
-        selected_indices = selection_results['selected_indices']
+        if self.cluster_cameras:
+            selection_results = self.clusterer.select_representative_cameras()
+            selected_indices = selection_results['selected_indices']
+        else:
+            selected_indices = [idx for idx in range(len(self.analyzer.views))]
         
         print("\nSelection Results:")
         print(f"Number of selected indices: {len(selected_indices)}")
