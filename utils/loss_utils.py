@@ -94,7 +94,7 @@ def dino_loss(rendered_image, gt_image, dino_encoder, lambda_dino):
         dtype=torch.float16,
         device=rendered_embedding.device
     )
-    return lambda_dino_fp16 * (1.0 - cosine_sim.mean())
+    return lambda_dino_fp16 *  cosine_sim.mean()
 
 
 #def dino_loss_l2(rendered_image, gt_image, dino_encoder, lambda_dino):

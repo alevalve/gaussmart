@@ -49,11 +49,11 @@ def training(dataset, opt, pipe,
              checkpoint_iterations,
              checkpoint,
              use_dino_loss=False,
-             lambda_dino=0.5):
+             lambda_dino=0.05):
     
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
-    gaussians = GaussianModel(dataset.sh_degree)
+    gaussians = GaussianModel(dataset.sh_degree, dataset.uniform_upsampling)
     scene = Scene(dataset, gaussians)
     gaussians.training_setup(opt)
 
@@ -326,6 +326,8 @@ if __name__ == "__main__":
     parser.add_argument("--run_segmentation", action="store_true")
     parser.add_argument("--segmentation_output", type=str, default="segmentation_results")
     parser.add_argument("--dataset_type", type=str, choices=['dtu', 'nerf', 'tyt'], default='tyt')
+    parser.add_argument('--skip_camera_clustering', action='store_true', help='Skip camera clustering')
+    parser.add_argument('--sam2', action='store_true', help='Use SAM2 instead of SAM1')
     parser.add_argument("--clean", action="store_true", help="Apply hull removal filtering to point cloud before segmentation")
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
@@ -347,6 +349,10 @@ if __name__ == "__main__":
                 "-t", args.dataset_type
             ]
             
+            if args.skip_camera_clustering:
+                subprocess_cmd.append("--skip_camera_clustering")
+            if args.sam2:
+                subprocess_cmd.append("--sam2")
             if args.clean:
                 subprocess_cmd.append("--clean")
                 

@@ -13,18 +13,16 @@ class SAMSegmentation:
     Class for performing segmentation using the Segment Anything Model (SAM).
     Handles model initialization, image processing, and visualization of results.
     """
-    def __init__(self, checkpoint_path: str, device: str = "cuda" if torch.cuda.is_available() else "cpu", model: str = "sam"):
+    def __init__(self, checkpoint_path: str, device: str = "cuda" if torch.cuda.is_available() else "cpu", sam2: bool = False):
         """Initialize SAM model and automatic mask generator"""
-        if model == "sam2":
+        if sam2:
             print(f"\nInitializing SAM2 with device: {device}")
             self._initialize_sam2()
-        elif model == "sam":
+        else:
             print(f"\nInitializing SAM with device: {device}")
             self.device = device
             self.checkpoint_path = checkpoint_path
             self._initialize_model(device)
-        else:
-            assert False, f"Unsupported segmentation model {model}"
         
     def _initialize_model(self, device: str):
         """Initialize the model on the specified device, fallback to CPU if OOM occurs"""
