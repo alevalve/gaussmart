@@ -21,15 +21,12 @@ class DINOImageEncoder(nn.Module):
         self.processor = AutoImageProcessor.from_pretrained(pretrained_model_name)
         self.model = AutoModel.from_pretrained(pretrained_model_name)
         
-        # Move to CUDA and convert to FP16
         self.model = self.model.cuda().half()
         self.model.eval()
         
-        # Convert normalization values to FP16
         self.mean = torch.tensor(self.processor.image_mean, device="cuda", dtype=torch.float16).view(1, 3, 1, 1)
         self.std = torch.tensor(self.processor.image_std, device="cuda", dtype=torch.float16).view(1, 3, 1, 1)
         
-        # Disable gradients for all parameters
         for p in self.model.parameters():
             p.requires_grad = False
 

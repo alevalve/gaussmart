@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]  # parent of scripts/
 PY = sys.executable
 
 
-mipnerf360_outdoor_scenes = ["treehill", "garden","stump","bicycle", "flowers"]
+mipnerf360_outdoor_scenes = ["bicycle", "flowers", "garden", "stump", "treehill"]
 mipnerf360_indoor_scenes = ["counter", "room", "kitchen", "bonsai"]
 # tanks_and_temples_scenes = ["truck", "train"]
 # deep_blending_scenes = ["drjohnson", "playroom"] 

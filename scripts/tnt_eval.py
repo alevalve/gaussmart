@@ -1,13 +1,3 @@
-#!/usr/bin/env python3
-# Copyright (C) 2023, Inria
-# GRAPHDECO research group, https://team.inria.fr/graphdeco
-# All rights reserved.
-#
-# This software is free for non-commercial, research and evaluation use
-# under the terms of the LICENSE.md file.
-#
-# For inquiries contact  george.drettakis@inria.fr
-
 import os
 from argparse import ArgumentParser
 import sys
@@ -25,7 +15,15 @@ parser.add_argument("--skip_training", action="store_true")
 parser.add_argument("--skip_rendering", action="store_true")
 parser.add_argument("--skip_metrics", action="store_true")
 parser.add_argument("--output_path", default="eval/tnt")
-parser.add_argument("--clean_pc", action="store_true", help="Apply hull removal filtering to point clouds")  # New argument
+parser.add_argument("--clean_pc", action="store_true",
+                    help="Apply hull removal filtering to point clouds")
+
+# NEW: pass-through DINO args
+parser.add_argument("--dino_start_iter", type=int, default=3000,
+                    help="Iteration after which DINO loss is enabled")
+parser.add_argument("--lambda_dino", type=float, default=0.05,
+                    help="Weight for DINO loss once enabled")
+
 args, _ = parser.parse_known_args()
 
 all_scenes = []
@@ -44,7 +42,10 @@ if not args.skip_training:
     if args.clean_pc:
         seg_args += " --clean"
     
-    common_args = " --quiet --eval --test_iterations -1" + seg_args
+    # Add dino args
+    dino_args = f" --dino_start_iter {args.dino_start_iter} --lambda_dino {args.lambda_dino}"
+    
+    common_args = " --quiet --eval --test_iterations -1" + seg_args + dino_args
 
     for scene in tnt_360_scenes:
         source = args.tnt + "/" + scene
