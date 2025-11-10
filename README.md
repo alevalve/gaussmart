@@ -1,6 +1,6 @@
 # GauSSmart: Enhanced 3D Reconstruction through 2D Foundation Models and Geometric Filtering
 
-[![Paper](https://www.arxiv.org/abs/2510.14270)
+[![Paper](https://img.shields.io/badge/arXiv-2510.14270-b31b1b.svg)](https://arxiv.org/abs/2510.14270)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ## Overview
